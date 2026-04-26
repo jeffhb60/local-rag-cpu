@@ -1,5 +1,5 @@
 from config import TOP_K
-from ollama_client import embed_one, generate
+from ollama_client import embed_one, generate_stream
 from store import get_collection
 
 
@@ -87,9 +87,15 @@ def main() -> None:
             continue
 
         hits = search(question)
-        answer = generate(make_prompt(question, hits))
+        prompt = make_prompt(question, hits)
 
-        print("\n" + answer)
+        print("\nAnswer: ", end="", flush=True)
+
+        # Consume the stream generator
+        for chunk in generate_stream(prompt):
+            print(chunk, end="", flush=True)
+
+        print("\n")
         print_sources(hits)
         print()
 
