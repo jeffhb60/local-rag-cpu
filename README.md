@@ -1,59 +1,64 @@
 # Local RAG CPU Assistant
 
-A simple local Retrieval-Augmented Generation (RAG) project for asking questions about local documents such as manuals, 
-PDFs, Word documents, Markdown files, and text files.
+A simple local Retrieval-Augmented Generation (RAG) project for asking questions about local documents such as manuals, PDFs, Word documents, Markdown files, and text files.
 
 This project runs locally using:
+
 * **Ollama** for the local language model and embeddings
 * **llama3.2:3b** as the local chat model
 * **all-minilm** as the embedding model
 * **ChromaDB** as the local vector database
-* **pypdf** for PDF parsing
+* **pypdf** for normal PDF text extraction
+* **PyMuPDF** for rendering scanned PDF pages before OCR
+* **Tesseract OCR** through `pytesseract` for scanned PDFs
 * **python-docx** for Word document parsing
+* **python-dotenv** for local `.env` configuration
 
-The goal is to create a practical, CPU-friendly document assistant that can search your local files and answer 
-questions using only the indexed document context.
+The goal is to create a practical, CPU-friendly document assistant that can search your local files and answer questions using only the indexed document context.
 
----
+The system does not send your documents to an external API. Document search, embeddings, and answer generation run locally through Ollama and ChromaDB.
 
 ## 1. What This Project Does
 This project lets you:
 
-1. Place documents into a local docs/ folder.
+1. Place documents into a local `docs/` folder or a private folder configured through `.env`.
 2. Run an ingestion script that extracts text from those documents.
-3. Split the extracted text into overlapping chunks.
-4. Convert those chunks into embeddings using Ollama.
-5. Store those embeddings in a local ChromaDB database.
-6. Ask questions through a command-line interface.
-7. Retrieve the most relevant document chunks.
-8. Send those chunks to a local LLM to generate an answer.
-
-The system does not send your documents to an external API. The document search and language model run locally through 
-Ollama and ChromaDB.
+3. Use normal PDF text extraction first.
+4. Fall back to OCR when a PDF page has little or no extractable embedded text.
+5. Split extracted text into overlapping chunks.
+6. Convert those chunks into embeddings using Ollama.
+7. Store those embeddings in a local ChromaDB database.
+8. Ask questions through a command-line interface.
+9. Retrieve the most relevant document chunks.
+10. Send those chunks to a local LLM to generate an answer.
 
 ## 2. Project Stack 
 
-
-| **Component** | **Tool** | **Purpose**                                         |
-|:---|:---|:--|
-| Local LLM | `llama3.2:3b` | Generates answers from retrieved context            |
+| Component | Tool | Purpose |
+|:---|:---|:---|
+| Local LLM | `llama3.2:3b` | Generates answers from retrieved context |
 | Embeddings | `all-minilm` | Converts document chunks and questions into vectors |
-| Vector Database | ChromaDB | Stores and searches document embeddings             | 
-| PDF Reader | pypdf | Extracts text from PDF files                        | 
-| Word reader | python-docx | Extract text from `.docx` files                     | 
-| HTTP client | requests | Calls the local Ollama API                          | 
+| Vector Database | ChromaDB | Stores and searches document embeddings |
+| PDF Reader | pypdf | Extracts embedded text from PDF files |
+| OCR Renderer | PyMuPDF | Renders scanned PDF pages as images for OCR |
+| OCR Engine | Tesseract OCR | Reads text from scanned PDF images |
+| OCR Wrapper | pytesseract | Lets Python call Tesseract |
+| Word Reader | python-docx | Extracts text from `.docx` files |
+| Config Loader | python-dotenv | Loads local settings from `.env` |
+| HTTP Client | requests | Calls the local Ollama API |
 
 ## 3. Project Structure
 
-```file_structure 
+```text
 local-rag-cpu/
 │
 ├── docs/
 │   └── put your PDFs, DOCX, TXT, and MD files here
 │
-├── chroma_db/
+├── chroma_db/ 
 │   └── local ChromaDB files are created here
 │
+├── .env
 ├── .gitignore
 ├── README.md
 ├── requirements.txt
@@ -69,23 +74,31 @@ local-rag-cpu/
 ## 4. File Overview 
 
 ### 4a. `config.py`
-* Stores project settings such as 
+Loads project settings from .env.
+
+Important settings include:
 * Document folder path
 * ChromaDB folder path
 * Chroma collection name
+* Index version
 * Ollama URL
 * Chat model name
 * Embedding model name
 * Chunk size
 * Chunk overlap
 * Number of retrieved chunks
+* Embedding and generation timeouts
+* OCR settings
+* Tesseract executable path
 
 ### 4b. `ollama_client.py`
 Wraps the Ollama API calls. 
+
 Main functions: 
 * `embed_one(text)`
 * `embed_many(texts)`
 * `generate(prompt)`
+
 This keeps the Ollama-specific code separate from the rest of the project.
 
 ### 4c. `loaders.py`
@@ -95,7 +108,13 @@ Supported file types:
 * `.docx`
 * `.txt`
 * `.md`
-PDF files include page metadata when text is extracted successfully.
+
+For PDFs, the loader first tries normal embedded text extraction with `pypdf`.
+
+If the extracted text is too short, the loader can fall back to OCR:
+1. PyMuPDF renders the PDF page as an image.
+2. Tesseract OCR reads the image.
+3. The OCR text is used if it is better than the extracted PDF text.
 
 ### 4d. `splitter.py`
 Splits large text into smaller overlapping chunks.
@@ -110,11 +129,14 @@ Creates or opens the local ChromaDB collection.
 Indexes documents into ChromaDB.
 
 This script:
-1. Finds supported files in docs/.
-2. Loads text from each file.
-3. Splits the text into chunks.
-4. Creates embeddings for each chunk.
-5. Stores the chunks, embeddings, and metadata in ChromaDB.
+1. Finds supported files in DOCS_DIR. 
+2. Loads text from each file. 
+3. Uses OCR when needed and enabled. 
+4. Splits the text into chunks. 
+5. Creates embeddings for each chunk. 
+6. Stores the chunks, embeddings, and metadata in ChromaDB. 
+7. Skips files that are already indexed with the same file stamp. 
+8. Uses `INDEX_VERSION` to force reindexing when extraction logic changes.
 
 ### 4g. `ask.py`
 Runs the command-line question-answering interface.
@@ -131,8 +153,9 @@ This script:
 Before running this project, install:
 * Python 3.10 or newer
 * Ollama
+* Tesseract OCR
 * The required Ollama models
-* The Python dependencies in requirements.txt
+* The Python dependencies in `requirements.txt`
 
 ## 6. Install Ollama Models
 Run these commands:
@@ -151,7 +174,33 @@ Exit the Ollama with:
 /bye
 ```
 
-## 7. Python Setup
+## 7. Install Tesseract OCR
+OCR requires the Tesseract OCR application, not just the Python package.
+### 7a. Windows
+Install Tesseract OCR.
+A common install path is:
+```text
+C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+Set this path in your `.env` file:
+```text
+TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+### 7b. macOS
+Install with Homebrew:
+```bash
+brew install tesseract
+```
+If Tesseract is on your system PATH, you can leave `TESSERACT_CMD` blank.
+
+### 7c. Linux
+Install with apt: 
+```bash
+sudo apt install tesseract-ocr
+```
+If Tesseract is on your system PATH, you can leave `TESSERACT_CMD` blank.
+
+## 8. Python Setup
 From the project folder: 
 ```bash
 python -m venv .venv
@@ -165,7 +214,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 8. Dependencies
+## 9. Dependencies
 The `requirements.txt` file should include: 
 ```depenencies 
 chromadb==1.5.8
@@ -173,59 +222,144 @@ requests==2.33.1
 pypdf==6.10.2
 python-docx==1.2.0
 tqdm==4.67.3
+PyMuPDF==1.27.2.3
+pytesseract==0.3.13
+pillow==12.2.0
 ```
 
 To check installed versions:
 ```bash 
-pip show chromadb requests pypdf python-docx tqdm
+pip show chromadb requests pypdf python-docx tqdm python-dotenv PyMuPDF pytesseract pillow
 ```
 
-## 9. Add Documents 
-Place your files in the docs/ folder. 
+## 10. Environment Configuration
+Create a `.env` file in the same folder as the `config.py`. 
 
-Supported formats: 
-```list
+Example:
+```env
+# Local RAG paths
+DOCS_DIR=docs
+DB_DIR=chroma_db
+
+# ChromaDB
+COLLECTION=manuals
+INDEX_VERSION=ocr-v1
+
+# Ollama
+OLLAMA_URL=http://localhost:11434
+CHAT_MODEL=llama3.2:3b
+EMBED_MODEL=all-minilm
+
+# Chunking
+CHUNK_CHARS=1000
+CHUNK_OVERLAP=180
+
+# Ingestion / retrieval
+EMBED_BATCH_SIZE=16
+TOP_K=5
+
+# Timeouts
+GENERATE_TIMEOUT=300
+EMBED_TIMEOUT=180
+
+# OCR
+OCR_ENABLED=true
+OCR_MIN_TEXT_CHARS=40
+OCR_DPI=200
+OCR_LANG=eng
+TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+If you want to keep documents outside the project folder, use an absolute path:
+```env
+DOCS_DIR=C:/Users/YourName/Documents/private_rag_docs
+DB_DIR=C:/Users/YourName/Documents/private_rag_db
+```
+
+Do not commit your real `.env` file to any repositories or anything else that is public facing. We recommend using 
+.gitignore to filter this.  Here is a recommended .gitignore: 
+```gitignore
+.env
+docs/
+chroma_db/
+__pycache__/
+.venv/
+```
+
+## 11. Add Documents 
+Place your files in the configured documents folder.  
+
+By default this is `docs/`
+
+Supported formats include:
+```text
 .pdf
 .docx
 .txt
 .md
 ```
 
-Example: 
-```file_structure
-RAG_Project/
+Example:
+```text
+local-rag-cpu/
 └── docs/
     ├── The_Grapes_of_Wrath_Full_Text.pdf
     ├── The_Grapes_of_Wrath_Wikipedia.pdf
 ```
 
-## 10. Ingest Documents
+## 12. Ingest Documents
 Run: 
 ```bash
 python ingest.py
 ```
 Expected output looks similiar to: 
-```output
+```text
 The_Grapes_of_Wrath_Full_Text.pdf: 100%|██████████| 92/92 [04:07<00:00,  2.70s/it]
 indexed: The_Grapes_of_Wrath_Full_Text.pdf (1470 chunks)
 The_Grapes_of_Wrath_Wikipedia.pdf: 100%|██████████| 4/4 [00:10<00:00,  2.73s/it]
 indexed: The_Grapes_of_Wrath_Wikipedia.pdf (64 chunks)
 done
 ```
-The ingestion step creates or updates the local ChromaDB database in the `chroma_db` directory. 
+If a document has already been indexed and has not changed, it may be skipped:
+```text
+skipped: The_Grapes_of_Wrath_Full_Text.pdf is already indexed
+skipped: The_Grapes_of_Wrath_Wikipedia.pdf is already indexed
+done
+```
+The ingestion step creates or updates the local ChromaDB database in the configured `DB_DIR`.
 
-## 11. Ask Questions 
+## 13. Reindexing Documents
+The project uses a file stamp to avoid reindexing unchanged files.
+
+The file stamp includes:
+* File path
+* File size
+* File modified time
+* `INDEX_VERSION`
+
+If you change extraction behavior, OCR settings, or chunking logic, update this value in .env:
+
+```.env
+INDEX_VERSION=ocr-v2
+```
+
+Then rerun: 
+```bash
+python ingest.py 
+```
+This forces the project to treat the documents as needing a fresh index.
+
+## 14. Ask Questions 
 After ingestion finishes, run: 
 ```bash
 python ask.py
 ```
 Then ask a question:
-```output
+```text
 Ask: Why was the Joad family going to California?
 ```
 
 Example output: 
-```output
+```text
 According to [1] The_Grapes_of_Wrath_Wikipedia.pdf, page 2, chunk 4 and [2] The_Grapes_of_Wrath_Wikipedia.pdf, page 2, chunk 3:
 
 The Joad family was going to California in search of work and a better life. They had heard that California offered high pay and were willing to take the risk of leaving their farm behind due to the devastating effects of the Dust Bowl.
@@ -244,29 +378,37 @@ Sources checked:
 5. The_Grapes_of_Wrath_Full_Text.pdf p.221 (chunk 648, distance 0.9463)
 ```
 To exit: 
-```script
+```text
 exit
 ```
 You can also exit with: 
-```script
+```text
 quit
 q
 ```
 
-## 11. Normal Workflow
+## 15. Normal Workflow
 After the first step, the usual workflow is: 
 ```bash 
 .venv\Scripts\activate
 python ingest.py
 python ask.py
 ```
-Run python `ingest.py` again whenever you add, remove, or update documents in the `docs/` folder.
+On macOS or Linux
+```bash
+source .venv/bin/activate
+python ingest.py
+python ask.py
+```
+Run `python ingest.py` again whenever you add, remove, or update documents in the configured documents folder.
 
-## 12. How the RAG Flow Works 
-```diagram
+## 16. How the RAG Flow Works 
+```text
 Local documents
       ↓
 Text extraction
+      ↓
+OCR fallback if needed
       ↓
 Chunking
       ↓
@@ -284,17 +426,18 @@ Relevant chunks
       ↓
 Local LLM answer
 ```
-The language model does not read every document every time. It only receives the chunks that ChromaDB finds most relevant to the question.
+The language model does not read every document every time. It only receives the chunks that ChromaDB finds most 
+relevant to the question.
 
 That is what makes this practical on CPU.
 
-## 13. Chunking 
+## 17. Chunking 
 Documents are usually too large to send directly to a small local model.
 
 Chunking breaks the document into smaller sections.
 
 The current settings are:
-```script 
+```python
 CHUNK_CHARS = 1000
 CHUNK_OVERLAP = 180
 ```
@@ -302,28 +445,79 @@ This means each chunk is about 1,000 characters long, with 180 characters of ove
 
 The overlap helps preserve context when an answer spans the boundary between two chunks.
 
-## 14. Current Retrieval Settings
+If you change chunking settings, consider bumping `INDEX_VERSION` and rerunning ingestion.
+
+## 18. Current Retrieval Settings
 The project currently retrieves the top 5 matching chunks by default: 
-```code
+```python
 TOP_K = 5
 ```
 If answers feel incomplete, increase this to:
-```code
+```python
 TOP_K = 8
 ```
 If answers are too slow or include too much irrelevant context, reduce it to:
-```code
+```python
 TOP_K = 3
 ```
 
-## 15. CPU Performance Notes
+## 19. OCR Settings
+OCR is controlled through `.env`.
+```env
+OCR_ENABLED=true
+OCR_MIN_TEXT_CHARS=40
+OCR_DPI=200
+OCR_LANG=eng
+TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+### 19a. `OCR_ENABLED`
+
+Turns OCR fallback on or off.
+```python
+OCR_ENABLED=false
+```
+
+### 19b. `OCR_MIN_TEXT_CHARS`
+If normal PDF text extraction returns fewer characters than this threshold, OCR is attempted.
+```env
+OCR_MIN_TEXT_CHARS=40
+```
+
+### 19c. `OCR_DPI`
+Controls image rendering quality before OCR.
+
+Higher values may improve OCR quality but will slow ingestion.
+```env
+OCR_DPI=200
+```
+
+### 19d. `OCR_LANG`
+Sets the Tesseract OCR language.
+
+English:
+```env
+OCR_LANG=eng
+```
+
+Spanish:
+```env
+OCR_LANG=spa
+```
+
+Multiple languages may be possible if installed: 
+```env
+OCR_LANG=eng+spa
+```
+
+## 20. CPU Performance Notes
 This project is designed for CPU-first use. 
 Expected behavior: 
 
 | **Task** | **CPU Performance** | 
 |:---|:---|
 | Ingesting small text files | Fast |
-| Ingesting large PDFs | Slower but usuable | 
+| Ingesting normal text-based PDFs | Moderate | 
+| Ingesting scanned PDFs with OCR | Slower |
 | Asking short questions | Usable |
 | Asking broad summary questions | Slower | 
 | Running large models | Not recommended | 
@@ -331,8 +525,11 @@ Expected behavior:
 The model `llama3.2:3b` is a practical starting point for CPU use. Larger models may provide better answers but will 
 usually be slower without a GPU.
 
-## 16. Troubleshooting
-### 16a. Error Message: `Could not reach Ollama. Start it, then try again.`
+OCR can be significantly slower than normal PDF text extraction because each scanned page must be rendered and processed 
+as an image.
+
+## 21. Troubleshooting
+### 21a. Error Message: `Could not reach Ollama. Start it, then try again.`
 Ollama is not running.
 Try: 
 ```bash
@@ -340,7 +537,7 @@ ollama serve
 ```
 Or open the Ollama desktop application if you installed the desktop version.
 
-### 16b. Error Message: `model not found`
+### 21b. Error Message: `model not found`
 The required model has not been downloaded.
 
 Run: 
@@ -349,83 +546,152 @@ ollama pull llama3.2:3b
 ollama pull all-minilm
 ```
 
-### 16c. Error Message: `No files found in docs`
-The `docs/` folder is empty or the files are not supported.
+### 21c. Error Message: `No files found in docs`
+The configured documents folder is empty or the files are not supported.
+
+Check your `.env`:
+```env
+DOCS_DIR=docs
+```
 Supported extensions:
-```bash
+```text
 .pdf
 .docx
 .txt
 .md
 ```
 
-### 16d. PDF produces no useful text 
-The PDF may be scanned rather than text-based.  `pypdf` can extract embedded text, but it does not perform OCR. We plan 
-to add OCR later with a tool such as Tesseract.
-
-### 16e. Answers are weak or vague
+### 21d. PDF produces weak or missing text 
 Possible causes:
-* The relevant document was not indexed.
-* The PDF text extraction was poor.
+* The PDF is scanned.
+* OCR is disabled.
+* Tesseract is not installed.
+* TESSERACT_CMD points to the wrong location.
+* The scan quality is poor.
+* The OCR language is wrong.
+
+Check these .env values:
+```env
+OCR_ENABLED=true
+OCR_MIN_TEXT_CHARS=40
+OCR_DPI=200
+OCR_LANG=eng
+TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+
+If OCR still fails, try increasing DPI:
+```env
+OCR_DPI=300
+```
+
+Then bump the index version:
+```env
+INDEX_VERSION=ocr-v2
+```
+Then rerun
+```bash
+python ingest.py
+```
+
+### 21e. OCR failed for page
+If you see output like: 
+```text
+OCR failed for scanned_contract.pdf page 3: ...
+```
+Check that:
+1. Tesseract OCR is installed.
+2. `pytesseract` is installed.
+3. `PyMuPDF` is installed.
+4. `pillow` is installed. 
+5. `TESSERACT_CMD` is correct.
+
+On Windows, the path often needs to be:
+```env
+TESSERACT_CMD=C:/Program Files/Tesseract-OCR/tesseract.exe
+```
+
+### 21f. Answers are weak or vague
+Possible causes:
+* The relevant document was not indexed. 
+* The PDF text extraction was poor. 
+* OCR was needed but failed. 
 * The chunk size is too small.
-* `TOP_K` is too low.
+* `TOP_K` is too low. 
 * The question is too broad.
 
-Try: 
-```block
-TOP_K = 8
-CHUNK_CHARS = 1200
-CHUNK_OVERLAP = 250
+Try:
+```env
+TOP_K=8
+CHUNK_CHARS=1200
+CHUNK_OVERLAP=250
+INDEX_VERSION=chunk-v2
 ```
+
 Then rerun: 
 ```bash
 python ingest.py
 python ask.py
 ```
 
-### 16f. Answers include information not in the documents
-The prompt already tells the model to use only retrieved context, but small local models can still drift.
+### 21g. Answers include information not in the documents
+The prompt tells the model to use only retrieved context, but small local models can still drift.
 
 Possible improvements:
-* Lower the temperature.
-* Retrieve fewer but more relevant chunks.
-* Improve chunking.
-* Add a reranking step.
+* Lower the temperature in `ollama_client.py`. 
+* Retrieve fewer but more relevant chunks. 
+* Improve chunking. 
+* Add reranking. 
 * Use a stronger local model if hardware allows.
 
-Default temperature setting:
-```code
+Current default temperature:
+```text
 "temperature": 0.1
 ```
 
-### 16f. Limitations
-This is a simple local RAG system. 
+### 21h. `.env` values are not loading
+Make sure
+1. The `.env` file is in the same folder as `config.py`.
+2. `config.py` calls `load_dotenv(BASE_DIR / ".env")`.
+3. `python-dotenv` is installed.
+4. You restarted the script after editing `.env`.
+
+Test with: 
+```bash
+python -c "from config import DOCS_DIR, OCR_ENABLED; print(DOCS_DIR, OCR_ENABLED)"
+```
+## 22. Limitations
+This is a simple local RAG system.
 
 Known limitations:
-* No OCR for scanned PDFs
-* No web interface
-* No user authentication
-* No advanced document cleanup
-* No reranking
-* No hybrid keyword/vector search
-* No automatic file change detection
-* No conversation memory across questions
+* OCR quality depends on scan quality.
+* OCR can be slow on large scanned PDFs. 
+* No web interface. 
+* No user authentication. 
+* No advanced document cleanup. 
+* No reranking. 
+* No hybrid keyword/vector search. 
+* No automatic file change detection. 
+* No conversation memory across questions. 
+* No document delete command beyond reingestion behavior. 
+* Small local models may still hallucinate if retrieved context is weak.
 
-### 16g. Possible Upcoming Improvements
+### 23. Possible Upcoming Improvements
 Good next upgrades:
-1. Add OCR for scanned PDFs.
-2. Add a Streamlit web interface.
-3. Add file upload from the browser.
-4. Add hybrid search with keyword and vector retrieval.
-5. Add reranking for better source selection.
-6. Add source previews before answering.
-7. Add document delete/reindex commands.
-8. Add a simple test suite.
-9. Add logging.
-10. Add Docker support.
+1. Add a Streamlit web interface.
+2. Add file upload from the browser. 
+3. Add hybrid search with keyword and vector retrieval. 
+4. Add reranking for better source selection. 
+5. Add source previews before answering. 
+6. Add document delete/reindex commands. 
+7. Add a simple test suite. 
+8. Add structured logging. 
+9. Add Docker support. 
+10. Add an `.env.example` template. 
+11. Add OCR confidence reporting. 
+12. Add OCR-only mode for scanned document batches.
 
-## 17.  License
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+## 24.  License
+This project is licensed under the MIT License. See the `LICENSE` file for details
 
 ## 18. Contact 
 For questions, open a GitHub issue or contact me through my GitHub profile.
