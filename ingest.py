@@ -3,7 +3,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from config import DOCS_DIR, EMBED_BATCH_SIZE
+from config import DOCS_DIR, EMBED_BATCH_SIZE, INDEX_VERSION
 from loaders import SUPPORTED_FILES, load_file
 from ollama_client import embed_many
 from splitter import split_text
@@ -12,7 +12,7 @@ from store import get_collection
 
 def file_stamp(path: Path) -> str:
     stat = path.stat()
-    raw = f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
+    raw = f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}::{INDEX_VERSION}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -33,7 +33,7 @@ def find_docs() -> list[Path]:
 
 def batched(items: list, size: int):
     for start in range(0, len(items), size):
-        yield items[start: start + size]
+        yield items[start : start + size]
 
 
 def build_rows(path: Path) -> list[dict]:
@@ -43,7 +43,8 @@ def build_rows(path: Path) -> list[dict]:
     chunk_number = 0
 
     for part in load_file(path):
-        page = part["page"]
+        page = part.get("page")
+        used_ocr = bool(part.get("ocr", False))
 
         for chunk in split_text(part["text"]):
             rows.append(
@@ -56,6 +57,7 @@ def build_rows(path: Path) -> list[dict]:
                         "source_id": source_id,
                         "page": page if page is not None else "",
                         "chunk": chunk_number,
+                        "ocr": used_ocr,
                     },
                 }
             )
@@ -64,21 +66,23 @@ def build_rows(path: Path) -> list[dict]:
     return rows
 
 
+def already_indexed(collection, source_id: str) -> bool:
+    try:
+        existing = collection.get(where={"source_id": source_id}, limit=1)
+        return bool(existing and existing.get("ids"))
+    except Exception:
+        return False
+
+
 def index_file(collection, path: Path) -> None:
     source_id = file_stamp(path)
 
-    # 1. Check if this exact file state is already in the database
-    try:
-        existing = collection.get(where={"source_id": source_id}, limit=1)
-        if existing and existing.get("ids"):
-            print(f"skipped (already indexed): {path.name}")
-            return
-    except Exception:
-        pass
+    if already_indexed(collection, source_id):
+        print(f"skipped: {path.name} is already indexed")
+        return
 
     source_path = str(path.resolve())
 
-    # 2. Delete any old chunks belonging to this file path
     try:
         collection.delete(where={"source_path": source_path})
     except Exception:
@@ -90,7 +94,6 @@ def index_file(collection, path: Path) -> None:
         print(f"skip: {path.name} has no readable text")
         return
 
-    # 3. Embed and upload the new chunks
     for group in tqdm(list(batched(rows, EMBED_BATCH_SIZE)), desc=path.name):
         texts = [row["text"] for row in group]
         embeddings = embed_many(texts)
@@ -102,7 +105,8 @@ def index_file(collection, path: Path) -> None:
             metadatas=[row["meta"] for row in group],
         )
 
-    print(f"indexed: {path.name} ({len(rows)} chunks)")
+    ocr_chunks = sum(1 for row in rows if row["meta"].get("ocr"))
+    print(f"indexed: {path.name} ({len(rows)} chunks, {ocr_chunks} OCR chunks)")
 
 
 def main() -> None:
