@@ -33,7 +33,7 @@ def find_docs() -> list[Path]:
 
 def batched(items: list, size: int):
     for start in range(0, len(items), size):
-        yield items[start : start + size]
+        yield items[start: start + size]
 
 
 def build_rows(path: Path) -> list[dict]:
@@ -65,19 +65,32 @@ def build_rows(path: Path) -> list[dict]:
 
 
 def index_file(collection, path: Path) -> None:
+    source_id = file_stamp(path)
+
+    # 1. Check if this exact file state is already in the database
+    try:
+        existing = collection.get(where={"source_id": source_id}, limit=1)
+        if existing and existing.get("ids"):
+            print(f"skipped (already indexed): {path.name}")
+            return
+    except Exception:
+        pass
+
+    source_path = str(path.resolve())
+
+    # 2. Delete any old chunks belonging to this file path
+    try:
+        collection.delete(where={"source_path": source_path})
+    except Exception:
+        pass
+
     rows = build_rows(path)
 
     if not rows:
         print(f"skip: {path.name} has no readable text")
         return
 
-    source_path = str(path.resolve())
-
-    try:
-        collection.delete(where={"source_path": source_path})
-    except Exception:
-        pass
-
+    # 3. Embed and upload the new chunks
     for group in tqdm(list(batched(rows, EMBED_BATCH_SIZE)), desc=path.name):
         texts = [row["text"] for row in group]
         embeddings = embed_many(texts)
