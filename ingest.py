@@ -44,7 +44,7 @@ def build_rows(path: Path) -> list[dict]:
 
     for part in load_file(path):
         page = part.get("page")
-        used_ocr = bool(part.get("ocr", False))
+        used_ocr = part.get("extraction_method") == "ocr"
 
         for chunk in split_text(part["text"]):
             rows.append(
