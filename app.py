@@ -7,7 +7,8 @@ import streamlit as st
 from ask import make_prompt, search
 from config import BASE_DIR, DOCS_DIR
 from loaders import SUPPORTED_FILES
-from ollama_client import OllamaError, generate
+from ollama_client import OllamaError
+from providers import generate_answer
 
 
 st.set_page_config(
@@ -116,10 +117,22 @@ with st.sidebar:
 
     st.divider()
 
+    st.header("Model")
+
+    provider = st.selectbox(
+        "Provider",
+        ["local", "deepseek", "gemini", "openai"],
+    )
+
+    model_override = st.text_input(
+        "Model override optional",
+        value="",
+    )
+
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
-
+    st.divider()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -160,7 +173,11 @@ if question:
                     sources = []
                 else:
                     prompt = make_prompt(question, hits)
-                    answer = generate(prompt)
+                    answer = generate_answer(
+                        prompt,
+                        provider_name=provider,
+                        model=model_override.strip() or None,
+                    )
 
                     sources = [
                         format_source(hit, index)
