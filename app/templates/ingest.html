@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>Ingest</title></head>
+<body>
+    <h1>Document Ingestion</h1>
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="files" multiple>
+        <label>Force rebuild <input type="checkbox" name="force_rebuild" value="true"></label>
+        <button type="submit">Upload & Index</button>
+    </form>
+    <h2>Indexed Documents</h2>
+    <ul>
+        {% for file, info in documents.items() %}
+        <li>{{ file }} - {{ info.chunks }} chunks</li>
+        {% endfor %}
+    </ul>
+    <p><a href="/">Home</a></p>
+</body>
+</html>

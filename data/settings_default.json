@@ -1,0 +1,11 @@
+{
+  "system_prompt": "You are a careful RAG assistant. You answer questions based **only** on the provided context.",
+  "rag_prompt_template": "Use the following retrieved context to answer the question. If the answer is not in the context, say you don't know. Always cite sources like [1], [2].\n\nContext:\n{context}\n\nQuestion: {question}",
+  "context_template": "[{index}] {file}, page {page}, chunk {chunk}\n{text}",
+  "top_k": 5,
+  "temperature": 0.2,
+  "strict_grounding": true,
+  "default_provider": "deepseek",
+  "default_model": "deepseek-chat",
+  "mode": "strict"
+}
