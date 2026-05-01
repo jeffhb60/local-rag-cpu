@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-header">
+    <h2>Upload & Index Documents</h2>
+    <p>Select one or more files. Supported: <code>.txt</code>, <code>.md</code>, <code>.pdf</code>, <code>.docx</code>.</p>
+</section>
+
+<section class="card">
+    <form id="upload-form">
+        <label>
+            Documents
+            <input type="file" id="document-files" name="files" accept=".txt,.md,.pdf,.docx" multiple>
+        </label>
+
+        <label class="checkbox-row">
+            <input type="checkbox" id="upload-force">
+            Force rebuild
+        </label>
+
+        <button type="submit">Upload & Index</button>
+    </form>
+
+    <p id="upload-status" class="status"></p>
+
+    <div class="progress-shell">
+        <div id="upload-progress-bar" class="progress-bar"></div>
+    </div>
+
+    <pre id="upload-output" class="result-box"></pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='upload.js') }}?v=1"></script>
+{% endblock %}
