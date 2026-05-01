@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-header">
+    <h2>Evaluation</h2>
+    <p>Upload a JSONL test set with questions, expected source files, and expected answer keywords.</p>
+</section>
+
+<section class="card">
+    <form id="eval-form">
+        <label>
+            JSONL Evaluation File
+            <input type="file" id="eval-file" accept=".jsonl">
+        </label>
+
+        <label>
+            Top K
+            <input id="eval-top-k" type="number" min="1" max="50" value="{{ settings.top_k_default }}">
+        </label>
+
+        <button type="submit">Run Evaluation</button>
+    </form>
+
+    <p id="eval-status" class="status"></p>
+    <pre id="eval-output" class="result-box"></pre>
+</section>
+
+<section class="card">
+    <h3>Example JSONL</h3>
+    <pre class="result-box">{"question": "What is the main policy?", "expected_source_files": ["example.pdf"], "expected_answer_keywords": ["policy"]}</pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='evaluation.js') }}?v=1"></script>
+{% endblock %}
