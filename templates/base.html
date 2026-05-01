@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ app_name }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+</head>
+
+<body>
+    <div class="app-layout">
+        <aside class="nav-sidebar">
+            <div class="brand">
+                <div class="brand-mark">RAG</div>
+                <div>
+                    <h1>{{ app_name }}</h1>
+                    <p>Document-grounded assistant</p>
+                </div>
+            </div>
+
+            <nav class="nav-menu">
+                <a href="/upload" class="{% if active_page == 'upload' %}active{% endif %}">Upload</a>
+                <a href="/reindex" class="{% if active_page == 'reindex' %}active{% endif %}">Reindex</a>
+                <a href="/evaluation" class="{% if active_page == 'evaluation' %}active{% endif %}">Evaluation</a>
+                <a href="/chat" class="{% if active_page == 'chat' %}active{% endif %}">Chat</a>
+            </nav>
+
+            <div class="sidebar-note">
+                <strong>Index version</strong>
+                <span>{{ settings.index_version }}</span>
+            </div>
+
+            <div class="sidebar-note">
+                <strong>Locked model</strong>
+                <span>{{ settings.chat_model }}</span>
+            </div>
+
+            <div class="sidebar-note">
+                <strong>Locked embeddings</strong>
+                <span>{{ settings.embedding_model }}</span>
+            </div>
+        </aside>
+
+        <main class="page-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', path='shared.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
