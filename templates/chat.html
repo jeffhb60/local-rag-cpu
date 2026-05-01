@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-header">
+    <h2>Chat</h2>
+    <p>Ask questions against the indexed corpus. Provider, chat model, and embedding model are locked to DeepSeek.</p>
+</section>
+
+<section class="settings-grid">
+    <div class="card">
+        <h3>Model Settings</h3>
+
+        <div class="form-grid">
+            <label>
+                Chat Provider
+                <div class="locked-setting">{{ settings.chat_provider }}</div>
+            </label>
+
+            <label>
+                Chat Model
+                <div class="locked-setting">{{ settings.chat_model }}</div>
+            </label>
+
+            <label>
+                Embedding Provider
+                <div class="locked-setting">{{ settings.embedding_provider }}</div>
+            </label>
+
+            <label>
+                Embedding Model
+                <div class="locked-setting">{{ settings.embedding_model }}</div>
+            </label>
+
+            <label>
+                Top K
+                <input id="top-k" type="number" min="1" max="50" value="{{ settings.top_k_default }}">
+            </label>
+
+            <label>
+                Temperature
+                <input id="temperature" type="number" min="0" max="2" step="0.1" value="{{ settings.temperature_default }}">
+            </label>
+        </div>
+
+        <label class="checkbox-row">
+            <input type="checkbox" id="strictness-mode" {% if settings.strictness_mode %}checked{% endif %}>
+            Strict grounding mode
+        </label>
+
+        <button id="save-settings" type="button">Save Runtime Settings</button>
+        <p id="settings-status" class="status"></p>
+    </div>
+
+    <div class="card">
+        <h3>Prompt Settings</h3>
+
+        <label>
+            System Prompt
+            <textarea id="system-prompt" rows="5">{{ settings.system_prompt }}</textarea>
+        </label>
+
+        <label>
+            RAG Instruction Template
+            <textarea id="rag-template" rows="10">{{ settings.rag_instruction_template }}</textarea>
+        </label>
+    </div>
+</section>
+
+<section class="card">
+    <div id="chat-window" class="chat-window">
+        <div class="message assistant">
+            <strong>Assistant</strong>
+            <p>Upload and index documents, then ask a question.</p>
+        </div>
+    </div>
+
+    <form id="chat-form" class="chat-form">
+        <input id="question-input" placeholder="Ask a question about your documents..." autocomplete="off">
+        <button type="submit">Send</button>
+    </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='chat.js') }}?v=1"></script>
+{% endblock %}
