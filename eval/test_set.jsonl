@@ -1,2 +1,0 @@
-{"question": "What is the capital of France?", "expected_source_files": ["geography.txt"], "expected_answer_keywords": ["Paris"]}
-{"question": "Explain quantum computing", "expected_source_files": ["tech_overview.pdf"], "expected_answer_keywords": ["qubit", "superposition"]}
