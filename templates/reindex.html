@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-header">
+    <h2>Reindex Documents</h2>
+    <p>Select specific files to reindex, or reindex the full corpus.</p>
+</section>
+
+<section class="card">
+    <div class="action-row">
+        <button id="refresh-docs-button" type="button">Refresh Document List</button>
+        <button id="reindex-all-button" type="button">Reindex All</button>
+    </div>
+
+    <label class="checkbox-row">
+        <input type="checkbox" id="reindex-force" checked>
+        Force rebuild selected files
+    </label>
+
+    <form id="reindex-selected-form">
+        <div id="document-list" class="document-list">
+            Loading documents...
+        </div>
+
+        <button type="submit">Reindex Selected</button>
+    </form>
+
+    <p id="reindex-status" class="status"></p>
+
+    <div class="progress-shell">
+        <div id="reindex-progress-bar" class="progress-bar"></div>
+    </div>
+
+    <pre id="reindex-output" class="result-box"></pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='reindex.js') }}?v=1"></script>
+{% endblock %}
