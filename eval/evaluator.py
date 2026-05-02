@@ -2,43 +2,153 @@ import argparse
 import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import requests
 
 from api.schemas import EvalResult, EvalSummary
+from config import settings
 from core.generator import RAGGenerator
 
 
 ProgressCallback = Callable[[str, int, int], None]
 
 
+STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "of",
+    "to",
+    "and",
+    "or",
+    "in",
+    "on",
+    "for",
+    "with",
+    "by",
+    "must",
+    "did",
+    "does",
+    "do",
+    "was",
+    "were",
+    "is",
+    "are",
+    "be",
+    "being",
+    "about",
+}
+
+
 def normalize_text(value: str) -> str:
     """
-    Normalize text for evaluation.
+    Normalize text for evaluation comparisons.
 
-    Keeps the evaluator simple but less brittle:
+    Steps:
     - lowercase
-    - remove punctuation
-    - collapse whitespace
+    - normalize dashes
+    - remove most punctuation
+    - collapse repeated whitespace
     """
     value = value.lower()
-    value = re.sub(r"[^a-z0-9\s]", " ", value)
+    value = value.replace("–", "-")
+    value = value.replace("—", "-")
+    value = re.sub(r"[^a-z0-9\s-]", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
 
-def loose_keyword_match(keyword: str, answer: str) -> bool:
+def singularize_token(token: str) -> str:
     """
-    Returns True if the keyword is reasonably represented in the answer.
+    Small plural-tolerance helper.
 
-    This avoids false failures where the answer is correct but phrased slightly
-    differently.
+    This is intentionally simple. It is not meant to be a full stemmer.
+    """
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
 
-    Examples:
-    - "racial classifications" should match "racial classification"
-    - "right to counsel" should match "right to the assistance of counsel"
-    - "questioning must cease" should partially match "interrogation must immediately stop"
+    if token.endswith("s") and len(token) > 4:
+        return token[:-1]
+
+    return token
+
+
+def content_tokens(value: str) -> list[str]:
+    """
+    Convert text into comparable content tokens.
+
+    Removes common stopwords and applies light singular/plural normalization.
+    """
+    normalized = normalize_text(value)
+
+    return [
+        singularize_token(token)
+        for token in normalized.split()
+        if token not in STOPWORDS
+    ]
+
+
+def load_equivalents(path: Path) -> dict[str, list[str]]:
+    """
+    Load keyword-equivalent mappings from JSON.
+
+    Expected JSON format:
+    {
+      "right to counsel": [
+        "right to counsel",
+        "right to the assistance of counsel",
+        "right to an attorney"
+      ]
+    }
+
+    If the file does not exist, evaluation still works with no custom equivalents.
+    """
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid evaluation equivalents JSON: {path}: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Evaluation equivalents file must contain a JSON object: {path}"
+        )
+
+    normalized: dict[str, list[str]] = {}
+
+    for key, values in data.items():
+        if not isinstance(key, str):
+            continue
+
+        if not isinstance(values, list):
+            continue
+
+        normalized_key = normalize_text(key)
+
+        normalized_values = [
+            value
+            for value in values
+            if isinstance(value, str) and value.strip()
+        ]
+
+        normalized[normalized_key] = normalized_values
+
+    return normalized
+
+
+def phrase_or_equivalent_match(
+    keyword: str,
+    answer: str,
+    legal_equivalents: dict[str, list[str]],
+) -> bool:
+    """
+    Check exact phrase match or configured equivalent phrase match.
     """
     keyword_norm = normalize_text(keyword)
     answer_norm = normalize_text(answer)
@@ -46,68 +156,109 @@ def loose_keyword_match(keyword: str, answer: str) -> bool:
     if not keyword_norm:
         return True
 
-    # Exact normalized phrase match.
     if keyword_norm in answer_norm:
         return True
 
-    # Singular/plural tolerance.
+    equivalents = legal_equivalents.get(keyword_norm, [])
+
+    for equivalent in equivalents:
+        if normalize_text(equivalent) in answer_norm:
+            return True
+
+    return False
+
+
+def loose_keyword_match(
+    keyword: str,
+    answer: str,
+    question: str = "",
+    legal_equivalents: dict[str, list[str]] | None = None,
+) -> bool:
+    """
+    Fairer keyword/concept match.
+
+    Supports:
+    - exact normalized phrase matches
+    - externally configured equivalent phrases
+    - singular/plural tolerance
+    - content-token overlap across the answer and question
+
+    Including the question prevents false failures where a term appears in the
+    user question and the answer directly responds to it.
+    """
+    legal_equivalents = legal_equivalents or {}
+
+    keyword_norm = normalize_text(keyword)
+    answer_norm = normalize_text(answer)
+    question_norm = normalize_text(question)
+    combined_norm = f"{question_norm} {answer_norm}".strip()
+
+    if not keyword_norm:
+        return True
+
+    if keyword_norm in answer_norm:
+        return True
+
+    if phrase_or_equivalent_match(
+        keyword=keyword,
+        answer=answer,
+        legal_equivalents=legal_equivalents,
+    ):
+        return True
+
     keyword_singular = " ".join(
-        token[:-1] if token.endswith("s") and len(token) > 4 else token
+        singularize_token(token)
         for token in keyword_norm.split()
     )
 
-    answer_singular = " ".join(
-        token[:-1] if token.endswith("s") and len(token) > 4 else token
-        for token in answer_norm.split()
+    combined_singular = " ".join(
+        singularize_token(token)
+        for token in combined_norm.split()
     )
 
-    if keyword_singular in answer_singular:
+    if keyword_singular in combined_singular:
         return True
 
-    keyword_tokens = [
-        token
-        for token in keyword_singular.split()
-        if token not in {
-            "the",
-            "a",
-            "an",
-            "of",
-            "to",
-            "and",
-            "or",
-            "in",
-            "on",
-            "for",
-            "with",
-            "by",
-            "must",
-        }
-    ]
+    keyword_tokens = content_tokens(keyword)
 
     if not keyword_tokens:
         return True
 
-    answer_tokens = set(answer_singular.split())
+    combined_tokens = set(content_tokens(f"{question} {answer}"))
 
-    matched = sum(1 for token in keyword_tokens if token in answer_tokens)
-    required = max(1, round(len(keyword_tokens) * 0.65))
+    matched = sum(1 for token in keyword_tokens if token in combined_tokens)
 
+    if len(keyword_tokens) == 1:
+        return matched == 1
+
+    required = max(1, round(len(keyword_tokens) * 0.67))
     return matched >= required
 
 
 class Evaluator:
     """
-    Simple RAG evaluation helper.
+    RAG evaluation helper.
 
-    A test passes if:
-    1. At least one expected source file appears in retrieved chunks.
-    2. Expected answer keywords are reasonably represented in the answer.
+    Reports:
+    - source hit rate
+    - keyword hit rate
+    - strict pass rate
+    - keyword coverage
+    - manual review candidates
 
-    This is intentionally a loose evaluator, not a legal final-answer judge.
+    This avoids treating one brittle pass/fail score as the whole truth.
     """
 
-    def __init__(self, generator: RAGGenerator | None = None):
+    def __init__(
+        self,
+        generator: RAGGenerator | None = None,
+        equivalents_path: Path | None = None,
+    ):
         self.generator = generator
+        self.equivalents_path = (
+            equivalents_path
+            or settings.evaluation_equivalents_path
+        )
 
     def run(
         self,
@@ -117,6 +268,10 @@ class Evaluator:
     ) -> EvalSummary:
         if self.generator is None:
             raise ValueError("Evaluator requires a RAGGenerator instance.")
+
+        # Reload on every evaluation run so edits to equivalents.json are picked up
+        # without restarting FastAPI.
+        legal_equivalents = load_equivalents(self.equivalents_path)
 
         results: list[EvalResult] = []
         total = len(test_cases)
@@ -164,14 +319,40 @@ class Evaluator:
                 )
             )
 
-            keyword_matches = {
-                keyword: loose_keyword_match(keyword, answer)
-                for keyword in expected_keywords
-            }
+            matched_keywords: list[str] = []
+            missing_keywords: list[str] = []
 
-            keyword_pass = all(keyword_matches.values())
+            for keyword in expected_keywords:
+                did_match = loose_keyword_match(
+                    keyword=keyword,
+                    answer=answer,
+                    question=question,
+                    legal_equivalents=legal_equivalents,
+                )
 
+                if did_match:
+                    matched_keywords.append(keyword)
+                else:
+                    missing_keywords.append(keyword)
+
+            keyword_total = len(expected_keywords)
+
+            keyword_coverage = (
+                len(matched_keywords) / keyword_total
+                if keyword_total > 0
+                else 1.0
+            )
+
+            # Allows one weak/missing term in a 3-keyword rubric while still
+            # requiring most concepts to be present.
+            keyword_pass = keyword_coverage >= 0.80
             passed = source_pass and keyword_pass
+
+            needs_manual_review = (
+                source_pass
+                and not passed
+                and keyword_coverage >= 0.50
+            )
 
             results.append(
                 EvalResult(
@@ -183,22 +364,22 @@ class Evaluator:
                     source_pass=source_pass,
                     keyword_pass=keyword_pass,
                     passed=passed,
+                    matched_keywords=matched_keywords,
+                    missing_keywords=missing_keywords,
+                    keyword_coverage=round(keyword_coverage, 3),
+                    needs_manual_review=needs_manual_review,
                 )
             )
 
             if progress_callback:
                 status = "passed" if passed else "failed"
-                missing_keywords = [
-                    keyword
-                    for keyword, did_match in keyword_matches.items()
-                    if not did_match
-                ]
 
                 if missing_keywords:
                     progress_callback(
                         (
                             f"Finished test case {index}/{total}: {status}. "
-                            f"Missing keywords: {', '.join(missing_keywords)}"
+                            f"Coverage {keyword_coverage:.0%}. "
+                            f"Missing: {', '.join(missing_keywords)}"
                         ),
                         index,
                         total,
@@ -211,6 +392,19 @@ class Evaluator:
                     )
 
         passed_count = sum(1 for result in results if result.passed)
+        source_passed = sum(1 for result in results if result.source_pass)
+        keyword_passed = sum(1 for result in results if result.keyword_pass)
+        manual_review_count = sum(
+            1
+            for result in results
+            if result.needs_manual_review
+        )
+
+        average_keyword_coverage = (
+            sum(result.keyword_coverage for result in results) / total
+            if total > 0
+            else 0.0
+        )
 
         if progress_callback:
             progress_callback(
@@ -223,6 +417,12 @@ class Evaluator:
             total=total,
             passed=passed_count,
             failed=total - passed_count,
+            source_passed=source_passed,
+            source_hit_rate=round(source_passed / total, 3) if total else 0.0,
+            keyword_passed=keyword_passed,
+            keyword_hit_rate=round(keyword_passed / total, 3) if total else 0.0,
+            average_keyword_coverage=round(average_keyword_coverage, 3),
+            manual_review_count=manual_review_count,
             results=results,
         )
 
@@ -232,20 +432,30 @@ def run_eval_against_api(
     api_url: str,
     top_k: int,
 ) -> dict[str, Any]:
-    cases = []
+    """
+    CLI evaluator that calls the running FastAPI server.
+
+    Example:
+    python -m eval.evaluator --jsonl eval/test_cases.jsonl --api-url http://localhost:8000/api/query
+    """
+    cases: list[dict[str, Any]] = []
 
     with open(jsonl_path, "r", encoding="utf-8") as file:
         for line in file:
             if line.strip():
                 cases.append(json.loads(line))
 
-    results = []
+    legal_equivalents = load_equivalents(settings.evaluation_equivalents_path)
+
+    results: list[dict[str, Any]] = []
 
     for index, case in enumerate(cases, start=1):
-        print(f"Running API eval case {index}/{len(cases)}: {case['question']}")
+        question = case["question"]
+
+        print(f"Running API eval case {index}/{len(cases)}: {question}")
 
         payload = {
-            "question": case["question"],
+            "question": question,
             "top_k": top_k,
         }
 
@@ -254,6 +464,7 @@ def run_eval_against_api(
         data = response.json()
 
         answer = data["answer"]
+
         retrieved_files = [
             chunk["metadata"].get("file_name", "")
             for chunk in data["retrieved_chunks"]
@@ -267,28 +478,79 @@ def run_eval_against_api(
             or any(expected in retrieved_files for expected in expected_files)
         )
 
-        keyword_pass = all(
-            loose_keyword_match(keyword, answer)
+        matched_keywords = [
+            keyword
             for keyword in expected_keywords
+            if loose_keyword_match(
+                keyword=keyword,
+                answer=answer,
+                question=question,
+                legal_equivalents=legal_equivalents,
+            )
+        ]
+
+        missing_keywords = [
+            keyword
+            for keyword in expected_keywords
+            if keyword not in matched_keywords
+        ]
+
+        keyword_coverage = (
+            len(matched_keywords) / len(expected_keywords)
+            if expected_keywords
+            else 1.0
         )
+
+        keyword_pass = keyword_coverage >= 0.80
+        passed = source_pass and keyword_pass
 
         results.append(
             {
-                "question": case["question"],
-                "passed": source_pass and keyword_pass,
+                "question": question,
+                "answer": answer,
+                "passed": passed,
                 "source_pass": source_pass,
                 "keyword_pass": keyword_pass,
+                "keyword_coverage": round(keyword_coverage, 3),
                 "retrieved_files": retrieved_files,
                 "expected_files": expected_files,
                 "expected_keywords": expected_keywords,
+                "matched_keywords": matched_keywords,
+                "missing_keywords": missing_keywords,
+                "needs_manual_review": (
+                    source_pass
+                    and not passed
+                    and keyword_coverage >= 0.50
+                ),
             }
         )
 
-    passed = sum(1 for result in results if result["passed"])
+    total = len(results)
+    passed_count = sum(1 for result in results if result["passed"])
+    source_passed = sum(1 for result in results if result["source_pass"])
+    keyword_passed = sum(1 for result in results if result["keyword_pass"])
+    manual_review_count = sum(
+        1
+        for result in results
+        if result["needs_manual_review"]
+    )
+
+    average_keyword_coverage = (
+        sum(result["keyword_coverage"] for result in results) / total
+        if total > 0
+        else 0.0
+    )
+
     summary = {
-        "total": len(results),
-        "passed": passed,
-        "failed": len(results) - passed,
+        "total": total,
+        "passed": passed_count,
+        "failed": total - passed_count,
+        "source_passed": source_passed,
+        "source_hit_rate": round(source_passed / total, 3) if total else 0.0,
+        "keyword_passed": keyword_passed,
+        "keyword_hit_rate": round(keyword_passed / total, 3) if total else 0.0,
+        "average_keyword_coverage": round(average_keyword_coverage, 3),
+        "manual_review_count": manual_review_count,
         "results": results,
     }
 

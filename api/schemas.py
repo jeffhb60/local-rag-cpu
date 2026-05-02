@@ -73,13 +73,29 @@ class EvalResult(BaseModel):
     retrieved_source_files: list[str]
     expected_source_files: list[str]
     expected_answer_keywords: list[str]
+
     source_pass: bool
     keyword_pass: bool
     passed: bool
+
+    matched_keywords: list[str] = []
+    missing_keywords: list[str] = []
+    keyword_coverage: float = 0.0
+    needs_manual_review: bool = False
 
 
 class EvalSummary(BaseModel):
     total: int
     passed: int
     failed: int
+
+    source_passed: int = 0
+    source_hit_rate: float = 0.0
+
+    keyword_passed: int = 0
+    keyword_hit_rate: float = 0.0
+
+    average_keyword_coverage: float = 0.0
+    manual_review_count: int = 0
+
     results: list[EvalResult]

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     docs_dir: Path = Path("data/docs")
     chroma_dir: Path = Path("chroma_db")
     index_state_path: Path = Path("data/index_state.json")
+    evaluation_equivalents_path: Path = Path("data/evaluation/equivalents.json")
 
     # Chroma
     collection_name: str = "rag_documents"
@@ -89,6 +90,7 @@ class Settings(BaseSettings):
         self.docs_dir.mkdir(parents=True, exist_ok=True)
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.index_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.evaluation_equivalents_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()
