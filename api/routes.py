@@ -30,26 +30,72 @@ from eval.evaluator import Evaluator
 
 router = APIRouter()
 
+def resolve_upload_destination(filename: str, force_rebuild: bool) -> Path:
+    """
+    Resolve the upload destination and prevent accidental overwrites.
+
+    Policy:
+    - If the file does not exist, allow save.
+    - If the file exists and force_rebuild=True, overwrite intentionally.
+    - If the file exists and force_rebuild=False, reject with 409 Conflict.
+    """
+    destination = settings.docs_dir / filename
+
+    if destination.exists() and not force_rebuild:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A document named '{filename}' already exists. "
+                "Enable Force rebuild to overwrite and reindex it."
+            ),
+        )
+
+    return destination
+
 
 def safe_filename(filename: str) -> str:
     """
-    Prevents path traversal from uploaded filenames.
+    Prevent path traversal from uploaded filenames.
+
+    Example:
+    ../../evil.pdf -> evil.pdf
     """
     return Path(filename).name
 
 
-def validate_supported_document(filename: str) -> None:
+def validate_upload_filename(filename: str) -> str:
     """
-    Reject unsupported uploads before saving them.
+    Validate and sanitize an uploaded filename before saving it.
+
+    This prevents:
+    - path traversal
+    - blank filenames
+    - unsupported file types
+
+    Client-side file restrictions can be bypassed, so the API must validate.
     """
-    extension = Path(filename).suffix.lower()
+    clean_name = safe_filename(filename)
+
+    if not clean_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename.",
+        )
+
+    extension = Path(clean_name).suffix.lower()
 
     if extension not in DocumentLoader.SUPPORTED_EXTENSIONS:
         allowed = ", ".join(sorted(DocumentLoader.SUPPORTED_EXTENSIONS))
+
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {extension}. Supported types: {allowed}",
+            detail=(
+                f"Unsupported file type: {extension or '[none]'}. "
+                f"Allowed types: {allowed}."
+            ),
         )
+
+    return clean_name
 
 
 def serialize_model(model: Any) -> dict[str, Any]:
@@ -62,11 +108,26 @@ def serialize_model(model: Any) -> dict[str, Any]:
     return jsonable_encoder(model)
 
 
-def parse_jsonl_upload(content: bytes) -> list[dict[str, Any]]:
+def parse_jsonl_content(content: bytes, filename: str | None = None) -> list[dict[str, Any]]:
     """
-    Parses uploaded JSONL evaluation files.
+    Parse uploaded JSONL evaluation content.
+
+    Each non-empty line must be valid JSON.
     """
-    lines = content.decode("utf-8").splitlines()
+    if filename and not filename.endswith(".jsonl"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .jsonl files are supported.",
+        )
+
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not decode file as UTF-8: {exc}",
+        ) from exc
+
     test_cases: list[dict[str, Any]] = []
 
     for line_number, line in enumerate(lines, start=1):
@@ -74,12 +135,26 @@ def parse_jsonl_upload(content: bytes) -> list[dict[str, Any]]:
             continue
 
         try:
-            test_cases.append(json.loads(line))
+            parsed = json.loads(line)
         except json.JSONDecodeError as exc:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid JSON on line {line_number}: {exc}",
             ) from exc
+
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Line {line_number} must be a JSON object.",
+            )
+
+        if "question" not in parsed or not str(parsed["question"]).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Line {line_number} is missing a non-empty question.",
+            )
+
+        test_cases.append(parsed)
 
     if not test_cases:
         raise HTTPException(
@@ -234,17 +309,14 @@ def run_evaluation_job(
     job_id: str,
     test_cases: list[dict[str, Any]],
     top_k: int,
-    retrieval_only: bool,
 ) -> None:
     try:
-        mode_label = "retrieval-only evaluation" if retrieval_only else "evaluation"
-
         jobs.update(
             job_id,
             status="running",
             current=0,
             total=len(test_cases),
-            message=f"Starting {mode_label} for {len(test_cases)} test case(s).",
+            message=f"Starting evaluation for {len(test_cases)} test case(s).",
         )
 
         generator = RAGGenerator(settings)
@@ -261,7 +333,6 @@ def run_evaluation_job(
         summary = evaluator.run(
             test_cases=test_cases,
             top_k=top_k,
-            retrieval_only=retrieval_only,
             progress_callback=progress,
         )
 
@@ -280,6 +351,7 @@ async def get_settings():
             "docs_dir": settings.docs_dir,
             "chroma_dir": settings.chroma_dir,
             "index_state_path": settings.index_state_path,
+            "evaluation_equivalents_path": settings.evaluation_equivalents_path,
             "collection_name": settings.collection_name,
             "index_version": settings.index_version,
             "embedding_provider": settings.embedding_provider,
@@ -293,11 +365,6 @@ async def get_settings():
             "system_prompt": settings.system_prompt,
             "rag_instruction_template": settings.rag_instruction_template,
             "context_format": settings.context_format,
-            "max_retrieval_distance": getattr(settings, "max_retrieval_distance", None),
-            "reranker_enabled": getattr(settings, "reranker_enabled", None),
-            "retrieval_candidate_k": getattr(settings, "retrieval_candidate_k", None),
-            "rerank_top_k": getattr(settings, "rerank_top_k", None),
-            "reranker_model": getattr(settings, "reranker_model", None),
         }
     )
 
@@ -326,10 +393,7 @@ async def update_settings(update: SettingsUpdate):
     if "system_prompt" in update_data and update_data["system_prompt"] is not None:
         settings.system_prompt = update_data["system_prompt"]
 
-    if (
-        "rag_instruction_template" in update_data
-        and update_data["rag_instruction_template"] is not None
-    ):
+    if "rag_instruction_template" in update_data and update_data["rag_instruction_template"] is not None:
         template = update_data["rag_instruction_template"]
 
         if "{context}" not in template or "{question}" not in template:
@@ -375,6 +439,11 @@ async def upload_documents_start(
     files: list[UploadFile] = File(...),
     force_rebuild: bool = Form(False),
 ):
+    """
+    Start upload/index as a background job.
+
+    The frontend should poll /api/jobs/{job_id}.
+    """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
@@ -384,11 +453,11 @@ async def upload_documents_start(
         if not upload.filename:
             continue
 
-        filename = safe_filename(upload.filename)
-        validate_supported_document(filename)
-
-        destination = settings.docs_dir / filename
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        filename = validate_upload_filename(upload.filename)
+        destination = resolve_upload_destination(
+            filename=filename,
+            force_rebuild=force_rebuild,
+        )
 
         with destination.open("wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
@@ -396,7 +465,10 @@ async def upload_documents_start(
         saved_paths.append(destination)
 
     if not saved_paths:
-        raise HTTPException(status_code=400, detail="No valid files were uploaded.")
+        raise HTTPException(
+            status_code=400,
+            detail="No valid files were uploaded.",
+        )
 
     job_id = jobs.create(
         total=len(saved_paths),
@@ -424,7 +496,7 @@ async def upload_documents_sync(
     """
     Synchronous compatibility endpoint.
 
-    The UI uses /documents/upload/start for live progress.
+    The UI should use /documents/upload/start for live progress.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
@@ -435,11 +507,11 @@ async def upload_documents_sync(
         if not upload.filename:
             continue
 
-        filename = safe_filename(upload.filename)
-        validate_supported_document(filename)
-
-        destination = settings.docs_dir / filename
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        filename = validate_upload_filename(upload.filename)
+        destination = resolve_upload_destination(
+            filename=filename,
+            force_rebuild=force_rebuild,
+        )
 
         with destination.open("wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
@@ -447,7 +519,10 @@ async def upload_documents_sync(
         saved_paths.append(destination)
 
     if not saved_paths:
-        raise HTTPException(status_code=400, detail="No valid files were uploaded.")
+        raise HTTPException(
+            status_code=400,
+            detail="No valid files were uploaded.",
+        )
 
     pipeline = IngestionPipeline(settings)
 
@@ -478,11 +553,17 @@ async def upload_documents_sync(
 
 @router.post("/documents/reindex/start", response_model=JobStartResponse)
 async def reindex_all_start(force_rebuild: bool = Form(False)):
+    """
+    Start full corpus reindex as a background job.
+    """
     pipeline = IngestionPipeline(settings)
     paths = pipeline.find_supported_files(settings.docs_dir)
 
     if not paths:
-        raise HTTPException(status_code=400, detail="No supported documents found.")
+        raise HTTPException(
+            status_code=400,
+            detail="No supported documents found.",
+        )
 
     job_id = jobs.create(
         total=len(paths),
@@ -507,6 +588,9 @@ async def reindex_selected_start(
     selected_files: list[str] = Form(...),
     force_rebuild: bool = Form(False),
 ):
+    """
+    Start selected-file reindex as a background job.
+    """
     if not selected_files:
         raise HTTPException(status_code=400, detail="No files selected.")
 
@@ -524,9 +608,17 @@ async def reindex_selected_start(
             ) from exc
 
         if not path.exists() or not path.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {relative}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"File not found: {relative}",
+            )
 
-        validate_supported_document(path.name)
+        if path.suffix.lower() not in DocumentLoader.SUPPORTED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {path.suffix.lower()}",
+            )
+
         paths.append(path)
 
     job_id = jobs.create(
@@ -552,7 +644,7 @@ async def reindex_all_sync(force_rebuild: bool = Form(False)):
     """
     Synchronous compatibility endpoint.
 
-    The UI uses /documents/reindex/start for live progress.
+    The UI should use /documents/reindex/start for live progress.
     """
     pipeline = IngestionPipeline(settings)
     return pipeline.ingest_directory(force_rebuild=force_rebuild)
@@ -616,24 +708,23 @@ async def query(req: QueryRequest):
 async def run_evaluation_start(
     file: UploadFile = File(...),
     top_k: int = Form(8),
-    retrieval_only: bool = Form(False),
 ):
-    if not file.filename or not file.filename.endswith(".jsonl"):
-        raise HTTPException(status_code=400, detail="Only .jsonl files are supported.")
+    """
+    Start evaluation as a background job.
 
+    The frontend should poll /api/jobs/{job_id}.
+    """
     content = await file.read()
-    test_cases = parse_jsonl_upload(content)
-
-    mode_label = "retrieval-only evaluation" if retrieval_only else "evaluation"
+    test_cases = parse_jsonl_content(content=content, filename=file.filename)
 
     job_id = jobs.create(
         total=len(test_cases),
-        message=f"Queued {mode_label} for {len(test_cases)} test case(s).",
+        message=f"Queued evaluation for {len(test_cases)} test case(s).",
     )
 
     thread = Thread(
         target=run_evaluation_job,
-        args=(job_id, test_cases, top_k, retrieval_only),
+        args=(job_id, test_cases, top_k),
         daemon=True,
     )
     thread.start()
@@ -648,18 +739,14 @@ async def run_evaluation_start(
 async def run_evaluation(
     file: UploadFile = File(...),
     top_k: int = Form(8),
-    retrieval_only: bool = Form(False),
 ):
     """
     Synchronous compatibility endpoint.
 
-    The UI uses /evaluate/run/start for live progress.
+    The UI should use /evaluate/run/start for live progress.
     """
-    if not file.filename or not file.filename.endswith(".jsonl"):
-        raise HTTPException(status_code=400, detail="Only .jsonl files are supported.")
-
     content = await file.read()
-    test_cases = parse_jsonl_upload(content)
+    test_cases = parse_jsonl_content(content=content, filename=file.filename)
 
     generator = RAGGenerator(settings)
     evaluator = Evaluator(generator)
@@ -667,7 +754,6 @@ async def run_evaluation(
     summary = evaluator.run(
         test_cases=test_cases,
         top_k=top_k,
-        retrieval_only=retrieval_only,
     )
 
     return summary.model_dump()
