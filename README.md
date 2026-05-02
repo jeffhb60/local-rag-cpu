@@ -8,7 +8,6 @@ The application lets users upload course or reference documents, index them into
 
 ## Project Purpose
 
-## Project Purpose
 
 This project is designed to demonstrate a practical, evaluable RAG system rather than a generic chatbot.
 
