@@ -47,9 +47,16 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
 
     # RAG settings
-    top_k_default: int = 8
+    top_k_default: int = 12
     temperature_default: float = 0.3
     strictness_mode: bool = True
+    max_retrieval_distance: float = 0.65
+
+    # Reranking
+    reranker_enabled: bool = True
+    retrieval_candidate_k: int = 20
+    rerank_top_k: int = 5
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # Semantic chunking
     semantic_breakpoint_type: str = "percentile"

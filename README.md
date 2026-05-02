@@ -237,7 +237,7 @@ This allows domain experts or instructors to add acceptable terminology without 
 
 ### 1. Clone the repository 
 ```bash
-git https://github.com/jeffhb60/rag-project.git
+git clone https://github.com/jeffhb60/rag-project.git
 cd rag-project
 ```
 
@@ -365,7 +365,7 @@ The UI shows progress as each test case runs.
 |----------|-----------------------------------------|--------------------------------------|
 | `GET`    | `/api/settings`                         | Get current settings                 | 
 | `PUT`    | `/api/settings`                         | Update allowed runtime settings      |
-| `GET`    | `/api/settings`                         | List available and indexed documents |
+| `GET`    | `/api/documents`                        | List available and indexed documents |
 | `POST`   | `/api/documents/upload/start`           | Start upload/index background job    |
 | `POST`   | `/api/documents/reindex/start`          | Start full reindex background job    | 
 | `POST`   | `/api/documents/reindex-selected/start` | Start selected-file reindex job      |
