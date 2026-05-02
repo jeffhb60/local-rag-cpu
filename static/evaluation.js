@@ -80,6 +80,7 @@ async function runEvaluation(event) {
     const formData = new FormData();
     formData.append("file", fileInput.files[0]);
     formData.append("top_k", Number($("eval-top-k").value));
+    formData.append("retrieval_only", $("retrieval-only").checked ? "true" : "false");
 
     status.textContent = "Starting evaluation job...";
     output.textContent = "";

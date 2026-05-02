@@ -19,6 +19,7 @@ from api.schemas import (
     SettingsUpdate,
 )
 from config import settings
+from core.document_loader import DocumentLoader
 from core.generator import RAGGenerator
 from core.ingestion import IngestionPipeline
 from core.progress import jobs
@@ -37,12 +38,56 @@ def safe_filename(filename: str) -> str:
     return Path(filename).name
 
 
+def validate_supported_document(filename: str) -> None:
+    """
+    Reject unsupported uploads before saving them.
+    """
+    extension = Path(filename).suffix.lower()
+
+    if extension not in DocumentLoader.SUPPORTED_EXTENSIONS:
+        allowed = ", ".join(sorted(DocumentLoader.SUPPORTED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {extension}. Supported types: {allowed}",
+        )
+
+
 def serialize_model(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
+
     if isinstance(model, dict):
         return model
+
     return jsonable_encoder(model)
+
+
+def parse_jsonl_upload(content: bytes) -> list[dict[str, Any]]:
+    """
+    Parses uploaded JSONL evaluation files.
+    """
+    lines = content.decode("utf-8").splitlines()
+    test_cases: list[dict[str, Any]] = []
+
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+
+        try:
+            test_cases.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON on line {line_number}: {exc}",
+            ) from exc
+
+    if not test_cases:
+        raise HTTPException(
+            status_code=400,
+            detail="No test cases found in JSONL file.",
+        )
+
+    return test_cases
 
 
 def run_upload_job(
@@ -114,41 +159,6 @@ def run_upload_job(
     except Exception as exc:
         jobs.fail(job_id, str(exc))
 
-def run_evaluation_job(
-    job_id: str,
-    test_cases: list[dict[str, Any]],
-    top_k: int,
-) -> None:
-    try:
-        jobs.update(
-            job_id,
-            status="running",
-            current=0,
-            total=len(test_cases),
-            message=f"Starting evaluation for {len(test_cases)} test case(s).",
-        )
-
-        generator = RAGGenerator(settings)
-        evaluator = Evaluator(generator)
-
-        def progress(message: str, current: int, total: int) -> None:
-            jobs.update(
-                job_id,
-                current=current,
-                total=total,
-                message=message,
-            )
-
-        summary = evaluator.run(
-            test_cases=test_cases,
-            top_k=top_k,
-            progress_callback=progress,
-        )
-
-        jobs.succeed(job_id, summary.model_dump())
-
-    except Exception as exc:
-        jobs.fail(job_id, str(exc))
 
 def run_reindex_job(
     job_id: str,
@@ -220,6 +230,47 @@ def run_reindex_job(
         jobs.fail(job_id, str(exc))
 
 
+def run_evaluation_job(
+    job_id: str,
+    test_cases: list[dict[str, Any]],
+    top_k: int,
+    retrieval_only: bool,
+) -> None:
+    try:
+        mode_label = "retrieval-only evaluation" if retrieval_only else "evaluation"
+
+        jobs.update(
+            job_id,
+            status="running",
+            current=0,
+            total=len(test_cases),
+            message=f"Starting {mode_label} for {len(test_cases)} test case(s).",
+        )
+
+        generator = RAGGenerator(settings)
+        evaluator = Evaluator(generator)
+
+        def progress(message: str, current: int, total: int) -> None:
+            jobs.update(
+                job_id,
+                current=current,
+                total=total,
+                message=message,
+            )
+
+        summary = evaluator.run(
+            test_cases=test_cases,
+            top_k=top_k,
+            retrieval_only=retrieval_only,
+            progress_callback=progress,
+        )
+
+        jobs.succeed(job_id, summary.model_dump())
+
+    except Exception as exc:
+        jobs.fail(job_id, str(exc))
+
+
 @router.get("/settings")
 async def get_settings():
     return jsonable_encoder(
@@ -242,6 +293,11 @@ async def get_settings():
             "system_prompt": settings.system_prompt,
             "rag_instruction_template": settings.rag_instruction_template,
             "context_format": settings.context_format,
+            "max_retrieval_distance": getattr(settings, "max_retrieval_distance", None),
+            "reranker_enabled": getattr(settings, "reranker_enabled", None),
+            "retrieval_candidate_k": getattr(settings, "retrieval_candidate_k", None),
+            "rerank_top_k": getattr(settings, "rerank_top_k", None),
+            "reranker_model": getattr(settings, "reranker_model", None),
         }
     )
 
@@ -259,7 +315,10 @@ async def update_settings(update: SettingsUpdate):
         settings.top_k_default = max(1, min(int(update_data["top_k_default"]), 50))
 
     if "temperature_default" in update_data and update_data["temperature_default"] is not None:
-        settings.temperature_default = max(0.0, min(float(update_data["temperature_default"]), 2.0))
+        settings.temperature_default = max(
+            0.0,
+            min(float(update_data["temperature_default"]), 2.0),
+        )
 
     if "strictness_mode" in update_data and update_data["strictness_mode"] is not None:
         settings.strictness_mode = bool(update_data["strictness_mode"])
@@ -267,7 +326,10 @@ async def update_settings(update: SettingsUpdate):
     if "system_prompt" in update_data and update_data["system_prompt"] is not None:
         settings.system_prompt = update_data["system_prompt"]
 
-    if "rag_instruction_template" in update_data and update_data["rag_instruction_template"] is not None:
+    if (
+        "rag_instruction_template" in update_data
+        and update_data["rag_instruction_template"] is not None
+    ):
         template = update_data["rag_instruction_template"]
 
         if "{context}" not in template or "{question}" not in template:
@@ -323,7 +385,10 @@ async def upload_documents_start(
             continue
 
         filename = safe_filename(upload.filename)
+        validate_supported_document(filename)
+
         destination = settings.docs_dir / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
 
         with destination.open("wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
@@ -371,12 +436,18 @@ async def upload_documents_sync(
             continue
 
         filename = safe_filename(upload.filename)
+        validate_supported_document(filename)
+
         destination = settings.docs_dir / filename
+        destination.parent.mkdir(parents=True, exist_ok=True)
 
         with destination.open("wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
 
         saved_paths.append(destination)
+
+    if not saved_paths:
+        raise HTTPException(status_code=400, detail="No valid files were uploaded.")
 
     pipeline = IngestionPipeline(settings)
 
@@ -446,12 +517,16 @@ async def reindex_selected_start(
 
         try:
             path.relative_to(settings.docs_dir.resolve())
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid path: {relative}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid path: {relative}",
+            ) from exc
 
         if not path.exists() or not path.is_file():
             raise HTTPException(status_code=404, detail=f"File not found: {relative}")
 
+        validate_supported_document(path.name)
         paths.append(path)
 
     job_id = jobs.create(
@@ -537,77 +612,28 @@ async def query(req: QueryRequest):
     )
 
 
-@router.post("/evaluate/run")
-async def run_evaluation(
-    file: UploadFile = File(...),
-    top_k: int = Form(8),
-):
-    if not file.filename or not file.filename.endswith(".jsonl"):
-        raise HTTPException(status_code=400, detail="Only .jsonl files are supported.")
-
-    content = await file.read()
-    lines = content.decode("utf-8").splitlines()
-
-    test_cases: list[dict[str, Any]] = []
-
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-
-        try:
-            test_cases.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid JSON on line {line_number}: {exc}",
-            )
-
-    generator = RAGGenerator(settings)
-    evaluator = Evaluator(generator)
-
-    summary = evaluator.run(
-        test_cases=test_cases,
-        top_k=top_k,
-    )
-
-    return summary.model_dump()
-
 @router.post("/evaluate/run/start", response_model=JobStartResponse)
 async def run_evaluation_start(
     file: UploadFile = File(...),
     top_k: int = Form(8),
+    retrieval_only: bool = Form(False),
 ):
     if not file.filename or not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only .jsonl files are supported.")
 
     content = await file.read()
-    lines = content.decode("utf-8").splitlines()
+    test_cases = parse_jsonl_upload(content)
 
-    test_cases: list[dict[str, Any]] = []
-
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-
-        try:
-            test_cases.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid JSON on line {line_number}: {exc}",
-            )
-
-    if not test_cases:
-        raise HTTPException(status_code=400, detail="No test cases found in JSONL file.")
+    mode_label = "retrieval-only evaluation" if retrieval_only else "evaluation"
 
     job_id = jobs.create(
         total=len(test_cases),
-        message=f"Queued evaluation for {len(test_cases)} test case(s).",
+        message=f"Queued {mode_label} for {len(test_cases)} test case(s).",
     )
 
     thread = Thread(
         target=run_evaluation_job,
-        args=(job_id, test_cases, top_k),
+        args=(job_id, test_cases, top_k, retrieval_only),
         daemon=True,
     )
     thread.start()
@@ -617,10 +643,12 @@ async def run_evaluation_start(
         status_url=f"/api/jobs/{job_id}",
     )
 
+
 @router.post("/evaluate/run")
 async def run_evaluation(
     file: UploadFile = File(...),
     top_k: int = Form(8),
+    retrieval_only: bool = Form(False),
 ):
     """
     Synchronous compatibility endpoint.
@@ -631,21 +659,7 @@ async def run_evaluation(
         raise HTTPException(status_code=400, detail="Only .jsonl files are supported.")
 
     content = await file.read()
-    lines = content.decode("utf-8").splitlines()
-
-    test_cases: list[dict[str, Any]] = []
-
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-
-        try:
-            test_cases.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid JSON on line {line_number}: {exc}",
-            )
+    test_cases = parse_jsonl_upload(content)
 
     generator = RAGGenerator(settings)
     evaluator = Evaluator(generator)
@@ -653,6 +667,7 @@ async def run_evaluation(
     summary = evaluator.run(
         test_cases=test_cases,
         top_k=top_k,
+        retrieval_only=retrieval_only,
     )
 
     return summary.model_dump()

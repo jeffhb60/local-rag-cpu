@@ -261,16 +261,15 @@ class Evaluator:
         )
 
     def run(
-        self,
-        test_cases: list[dict[str, Any]],
-        top_k: int = 8,
-        progress_callback: ProgressCallback | None = None,
+            self,
+            test_cases: list[dict[str, Any]],
+            top_k: int = 8,
+            retrieval_only: bool = False,
+            progress_callback: ProgressCallback | None = None,
     ) -> EvalSummary:
         if self.generator is None:
             raise ValueError("Evaluator requires a RAGGenerator instance.")
 
-        # Reload on every evaluation run so edits to equivalents.json are picked up
-        # without restarting FastAPI.
         legal_equivalents = load_equivalents(self.equivalents_path)
 
         results: list[EvalResult] = []
@@ -282,19 +281,31 @@ class Evaluator:
             expected_keywords = case.get("expected_answer_keywords", [])
 
             if progress_callback:
+                mode_label = "retrieval-only" if retrieval_only else "generation"
                 progress_callback(
-                    f"Running test case {index}/{total}: {question[:120]}",
+                    f"Running {mode_label} test case {index}/{total}: {question[:120]}",
                     index - 1,
                     total,
                 )
 
-            rag_result = self.generator.answer(
-                question=question,
-                top_k=top_k,
-            )
+            if retrieval_only:
+                query_embedding = self.generator.embeddings.embed_query(question)
 
-            answer = rag_result["answer"]
-            retrieved_chunks = rag_result["retrieved_chunks"]
+                retrieved_chunks = self.generator.vectorstore.query(
+                    question=question,
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                )
+
+                answer = None
+            else:
+                rag_result = self.generator.answer(
+                    question=question,
+                    top_k=top_k,
+                )
+
+                answer = rag_result["answer"]
+                retrieved_chunks = rag_result["retrieved_chunks"]
 
             retrieved_files = [
                 chunk["metadata"].get("file_name", "")
@@ -312,47 +323,54 @@ class Evaluator:
             ]
 
             source_pass = (
-                not expected_files_normalized
-                or any(
-                    expected in retrieved_files_normalized
-                    for expected in expected_files_normalized
+                    not expected_files_normalized
+                    or any(
+                expected in retrieved_files_normalized
+                for expected in expected_files_normalized
+            )
+            )
+
+            if retrieval_only:
+                keyword_pass = None
+                matched_keywords = []
+                missing_keywords = []
+                keyword_coverage = None
+                passed = source_pass
+                needs_manual_review = False
+
+            else:
+                matched_keywords: list[str] = []
+                missing_keywords: list[str] = []
+
+                for keyword in expected_keywords:
+                    did_match = loose_keyword_match(
+                        keyword=keyword,
+                        answer=answer or "",
+                        question=question,
+                        legal_equivalents=legal_equivalents,
+                    )
+
+                    if did_match:
+                        matched_keywords.append(keyword)
+                    else:
+                        missing_keywords.append(keyword)
+
+                keyword_total = len(expected_keywords)
+
+                keyword_coverage = (
+                    len(matched_keywords) / keyword_total
+                    if keyword_total > 0
+                    else 1.0
                 )
-            )
 
-            matched_keywords: list[str] = []
-            missing_keywords: list[str] = []
+                keyword_pass = keyword_coverage >= 0.80
+                passed = source_pass and keyword_pass
 
-            for keyword in expected_keywords:
-                did_match = loose_keyword_match(
-                    keyword=keyword,
-                    answer=answer,
-                    question=question,
-                    legal_equivalents=legal_equivalents,
+                needs_manual_review = (
+                        source_pass
+                        and not passed
+                        and keyword_coverage >= 0.50
                 )
-
-                if did_match:
-                    matched_keywords.append(keyword)
-                else:
-                    missing_keywords.append(keyword)
-
-            keyword_total = len(expected_keywords)
-
-            keyword_coverage = (
-                len(matched_keywords) / keyword_total
-                if keyword_total > 0
-                else 1.0
-            )
-
-            # Allows one weak/missing term in a 3-keyword rubric while still
-            # requiring most concepts to be present.
-            keyword_pass = keyword_coverage >= 0.80
-            passed = source_pass and keyword_pass
-
-            needs_manual_review = (
-                source_pass
-                and not passed
-                and keyword_coverage >= 0.50
-            )
 
             results.append(
                 EvalResult(
@@ -366,7 +384,12 @@ class Evaluator:
                     passed=passed,
                     matched_keywords=matched_keywords,
                     missing_keywords=missing_keywords,
-                    keyword_coverage=round(keyword_coverage, 3),
+                    keyword_coverage=(
+                        round(keyword_coverage, 3)
+                        if keyword_coverage is not None
+                        else None
+                    ),
+                    retrieval_only=retrieval_only,
                     needs_manual_review=needs_manual_review,
                 )
             )
@@ -374,41 +397,71 @@ class Evaluator:
             if progress_callback:
                 status = "passed" if passed else "failed"
 
-                if missing_keywords:
+                if retrieval_only:
                     progress_callback(
-                        (
-                            f"Finished test case {index}/{total}: {status}. "
-                            f"Coverage {keyword_coverage:.0%}. "
-                            f"Missing: {', '.join(missing_keywords)}"
-                        ),
+                        f"Finished retrieval-only test case {index}/{total}: {status}",
                         index,
                         total,
                     )
                 else:
-                    progress_callback(
-                        f"Finished test case {index}/{total}: {status}",
-                        index,
-                        total,
-                    )
+                    if missing_keywords:
+                        progress_callback(
+                            (
+                                f"Finished test case {index}/{total}: {status}. "
+                                f"Coverage {keyword_coverage:.0%}. "
+                                f"Missing: {', '.join(missing_keywords)}"
+                            ),
+                            index,
+                            total,
+                        )
+                    else:
+                        progress_callback(
+                            f"Finished test case {index}/{total}: {status}",
+                            index,
+                            total,
+                        )
 
         passed_count = sum(1 for result in results if result.passed)
         source_passed = sum(1 for result in results if result.source_pass)
-        keyword_passed = sum(1 for result in results if result.keyword_pass)
-        manual_review_count = sum(
-            1
-            for result in results
-            if result.needs_manual_review
-        )
 
-        average_keyword_coverage = (
-            sum(result.keyword_coverage for result in results) / total
-            if total > 0
-            else 0.0
-        )
+        if retrieval_only:
+            keyword_passed = None
+            keyword_hit_rate = None
+            average_keyword_coverage = None
+            manual_review_count = 0
+        else:
+            keyword_passed = sum(
+                1 for result in results if result.keyword_pass is True
+            )
+
+            keyword_hit_rate = (
+                round(keyword_passed / total, 3)
+                if total
+                else 0.0
+            )
+
+            keyword_coverages = [
+                result.keyword_coverage
+                for result in results
+                if result.keyword_coverage is not None
+            ]
+
+            average_keyword_coverage = (
+                round(sum(keyword_coverages) / len(keyword_coverages), 3)
+                if keyword_coverages
+                else 0.0
+            )
+
+            manual_review_count = sum(
+                1
+                for result in results
+                if result.needs_manual_review
+            )
 
         if progress_callback:
+            mode_label = "retrieval-only evaluation" if retrieval_only else "evaluation"
             progress_callback(
-                f"Evaluation complete: {passed_count}/{total} passed.",
+                f"{mode_label.capitalize()} complete: {passed_count}/{total} passed.",
                 total,
                 total,
             )
@@ -417,11 +470,12 @@ class Evaluator:
             total=total,
             passed=passed_count,
             failed=total - passed_count,
+            retrieval_only=retrieval_only,
             source_passed=source_passed,
             source_hit_rate=round(source_passed / total, 3) if total else 0.0,
             keyword_passed=keyword_passed,
-            keyword_hit_rate=round(keyword_passed / total, 3) if total else 0.0,
-            average_keyword_coverage=round(average_keyword_coverage, 3),
+            keyword_hit_rate=keyword_hit_rate,
+            average_keyword_coverage=average_keyword_coverage,
             manual_review_count=manual_review_count,
             results=results,
         )

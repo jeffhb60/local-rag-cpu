@@ -69,33 +69,37 @@ class SettingsUpdate(BaseModel):
 
 class EvalResult(BaseModel):
     question: str
-    answer: str
+    answer: str | None = None
+
     retrieved_source_files: list[str]
     expected_source_files: list[str]
     expected_answer_keywords: list[str]
 
     source_pass: bool
-    keyword_pass: bool
+    keyword_pass: bool | None = None
     passed: bool
 
     matched_keywords: list[str] = []
     missing_keywords: list[str] = []
-    keyword_coverage: float = 0.0
-    needs_manual_review: bool = False
+    keyword_coverage: float | None = None
 
+    retrieval_only: bool = False
+    needs_manual_review: bool = False
 
 class EvalSummary(BaseModel):
     total: int
     passed: int
     failed: int
 
+    retrieval_only: bool = False
+
     source_passed: int = 0
     source_hit_rate: float = 0.0
 
-    keyword_passed: int = 0
-    keyword_hit_rate: float = 0.0
+    keyword_passed: int | None = None
+    keyword_hit_rate: float | None = None
 
-    average_keyword_coverage: float = 0.0
+    average_keyword_coverage: float | None = None
     manual_review_count: int = 0
 
     results: list[EvalResult]
