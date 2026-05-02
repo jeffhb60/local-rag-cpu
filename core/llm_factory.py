@@ -7,9 +7,6 @@ from config import Settings
 class LLMFactory:
     """
     Creates the locked DeepSeek chat model.
-
-    Requested locked model:
-    - DeepSeek-V4-Pro
     """
 
     @staticmethod

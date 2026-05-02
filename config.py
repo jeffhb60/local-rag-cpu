@@ -7,18 +7,8 @@ class Settings(BaseSettings):
     """
     Central app configuration.
 
-    Important:
-    - Chat provider is locked to DeepSeek.
-    - Chat model is locked to DeepSeek-V4-Pro.
-    - Embedding provider is locked to DeepSeek.
-    - Embedding model is locked to DeepSeek-V4-Embed.
-
-    Runtime settings that remain adjustable:
-    - top_k_default
-    - temperature_default
-    - strictness_mode
-    - system_prompt
-    - rag_instruction_template
+    Chat is locked to DeepSeek.
+    Embeddings are locked to OpenAI text-embedding-3-small.
     """
 
     model_config = SettingsConfigDict(
@@ -38,19 +28,22 @@ class Settings(BaseSettings):
 
     # Chroma
     collection_name: str = "rag_documents"
-    index_version: str = "semantic-v1"
+    index_version: str = "semantic-v2-openai-embeddings"
 
     # Locked embeddings
-    embedding_provider: str = "deepseek"
-    embedding_model: str = "DeepSeek-V4-Embed"
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
 
     # Locked chat generation
     chat_provider: str = "deepseek"
-    chat_model: str = "DeepSeek-V4-Pro"
+    chat_model: str = "deepseek-v4-pro"
 
     # API keys
+    openai_api_key: str | None = None
     deepseek_api_key: str | None = None
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
+
+    # DeepSeek
+    deepseek_base_url: str = "https://api.deepseek.com"
 
     # RAG settings
     top_k_default: int = 8

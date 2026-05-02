@@ -6,22 +6,15 @@ from config import Settings
 
 class EmbeddingFactory:
     """
-    Builds the locked DeepSeek embedding model.
-
-    This assumes DeepSeek exposes an OpenAI-compatible embeddings endpoint
-    at settings.deepseek_base_url.
-
-    Requested locked model:
-    - DeepSeek-V4-Embed
+    Builds the locked OpenAI embedding model for retrieval/indexing.
     """
 
     @staticmethod
     def create(settings: Settings) -> Embeddings:
-        if not settings.deepseek_api_key:
-            raise ValueError("DEEPSEEK_API_KEY is required for DeepSeek embeddings.")
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for OpenAI embeddings.")
 
         return OpenAIEmbeddings(
             model=settings.embedding_model,
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
+            api_key=settings.openai_api_key,
         )
